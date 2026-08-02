@@ -1,0 +1,83 @@
+name: Cloud Build Android APK
+
+on:
+  push:
+    branches: [ "main" ] # 如果你的主分支叫 master，请修改这里
+  workflow_dispatch:     # 允许在 GitHub 网页或 App 端手动点击运行
+
+jobs:
+  build:
+    name: Build Web & APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      # 1. 设置 Node.js 环境
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 2. 安装前端依赖并构建 Vite 产物
+      - name: Build Web App
+        run: |
+          npm install
+          npm run build
+
+      # 3. 动态集成 Capacitor 并生成 Android 工程
+      - name: Init Capacitor & Add Android
+        run: |
+          # 临时安装 Capacitor 核心及 CLI
+          npm install @capacitor/core @capacitor/android
+          npm install @capacitor/cli -D
+          
+          # 初始化 Capacitor，指定打包目录为 dist
+          npx cap init cicadidae-motion com.cicadidae.motion --web-dir dist
+          
+          # 添加 Android 平台代码
+          npx cap add android
+
+      # 4. 使用 Bash 脚本动态修改 AndroidManifest.xml 注入摄像头权限
+      - name: Patch AndroidManifest for Camera Permission
+        run: |
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          # 使用 sed 命令在 <application 标签前插入权限声明
+          sed -i '/<application/i \    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-permission android:name="android.permission.INTERNET" />\n' $MANIFEST_PATH
+          
+          # 打印修改后的 Manifest 文件，方便在 Action 日志中核对
+          cat $MANIFEST_PATH
+
+      # 5. 设置 Java 环境 (Gradle 构建必需)
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      # 6. 配置 Android 构建缓存加速后续打包
+      - name: Cache Gradle packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # 7. 赋予执行权限并调用 Gradle 打包
+      - name: Build Debug APK
+        working-directory: ./android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
+
+      # 8. 提取生成的 APK 文件
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cicadidae-motion-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
